@@ -692,7 +692,14 @@
         else mouseOnTip = false;
       }
     });
-    setTimeout(maybeClear, ts.options.hintDelay ? ts.options.hintDelay : 1700);
+
+    if (ts.options.hintDelay && ts.options.hintDelay >= 0) {
+      setTimeout(maybeClear, ts.options.hintDelay);
+    } else if (ts.options.hintDelay === undefined) {
+      // the user may provide negative values to disable this feature
+      setTimeout(maybeClear, 1700);
+    }
+
     var clearActivity = onEditorActivity(cm, clear)
 }
 
