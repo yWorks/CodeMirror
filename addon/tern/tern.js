@@ -45,14 +45,16 @@
 
 (function(mod) {
   if (typeof exports == "object" && typeof module == "object") // CommonJS
-    mod(require("../../lib/codemirror"));
+    mod(require("../../lib/codemirror"), require("tern/lib/tern"));
   else if (typeof define == "function" && define.amd) // AMD
-    define(["../../lib/codemirror"], mod);
+    define(["../../lib/codemirror", "tern/lib/tern"], mod);
   else // Plain browser env
-    mod(CodeMirror);
-})(function(CodeMirror) {
+    mod(CodeMirror, tern);
+})(function(CodeMirror, tern) {
   "use strict";
   // declare global: tern
+
+  var boo = "BOOBOOFOO";
 
   CodeMirror.TernServer = function(options) {
     var self = this;
@@ -76,8 +78,10 @@
     this.activeArgHints = null;
     this.jumpStack = [];
 
-    this.getHint = function(cm, c) { return hint(self, cm, c); };
+    this.getHint = function(cm, c, callbacks, completionsCallback) { return hint(self, cm, c, callbacks, completionsCallback); };
     this.getHint.async = true;
+
+    this.styleFunctionTypeString = styleFunctionTypeString;
   };
 
   CodeMirror.TernServer.prototype = {
@@ -102,8 +106,12 @@
       if (found && found.changed) sendDoc(this, found);
     },
 
-    complete: function(cm) {
-      cm.showHint({hint: this.getHint});
+    complete: function(cm, callbacks, completionsCallback) {
+      var getHint = function (cm, c) {
+        this.getHint(cm, c, callbacks, completionsCallback);
+      }.bind(this);
+      getHint.async = this.getHint.async;
+      cm.showHint({hint: getHint});
     },
 
     showType: function(cm, pos, c) { showContextInfo(this, cm, pos, "type", c); },
@@ -204,44 +212,84 @@
 
   // Completion
 
-  function hint(ts, cm, c) {
-    ts.request(cm, {type: "completions", types: true, docs: true, urls: true}, function(error, data) {
-      if (error) return showError(ts, cm, error);
-      var completions = [], after = "";
-      var from = data.start, to = data.end;
-      if (cm.getRange(Pos(from.line, from.ch - 2), from) == "[\"" &&
-          cm.getRange(to, Pos(to.line, to.ch + 2)) != "\"]")
-        after = "\"]";
-
-      for (var i = 0; i < data.completions.length; ++i) {
-        var completion = data.completions[i], className = typeToIcon(completion.type);
-        if (data.guess) className += " " + cls + "guess";
-        completions.push({text: completion.name + after,
-                          displayText: completion.displayName || completion.name,
-                          className: className,
-                          data: completion});
-      }
-
-      var obj = {from: from, to: to, list: completions};
+  function hint(ts, cm, c, callbacks, completionsCallback) {
+    function registerCallbacks(obj) {
       var tooltip = null;
-      CodeMirror.on(obj, "close", function() { remove(tooltip); });
-      CodeMirror.on(obj, "update", function() { remove(tooltip); });
-      CodeMirror.on(obj, "select", function(cur, node) {
+      CodeMirror.on(obj, "close", function () { remove(tooltip); });
+      CodeMirror.on(obj, "update", function () { remove(tooltip); });
+      CodeMirror.on(obj, "select", function (cur, node) {
         remove(tooltip);
         var content = ts.options.completionTip ? ts.options.completionTip(cur.data) : cur.data.doc;
         if (content) {
           tooltip = makeTooltip(node.parentNode.getBoundingClientRect().right + window.pageXOffset,
-                                node.getBoundingClientRect().top + window.pageYOffset, content);
+              node.getBoundingClientRect().top + window.pageYOffset, content);
           tooltip.className += " " + cls + "hint-doc";
         }
       });
+
+      // MOD: callbacks
+      for (var cb in callbacks) if (callbacks.hasOwnProperty(cb)) {
+        CodeMirror.on(obj, cb, callbacks[cb]);
+      }
+
       c(obj);
-    });
+    }
+
+    // MOD: completionsCallback
+    if (completionsCallback) {
+      var completions = completionsCallback();
+      completions.list = completions.list.map(function (member) {
+        member.className !== void 0 || (member.className = typeToIcon(member.type, member.metaData));
+        return member;
+      });
+      registerCallbacks(completions);
+    } else {
+      // MOD: CamelCase completion
+      ts.request(cm, {
+        type: "completions",
+        types: true,
+        docs: true,
+        urls: true,
+        expandWordForward: false,
+        filter: false, // get all completions without respect to the current word and filter by ourselves
+        sort: false // we'll sort in responseFilter
+      }, function (error, data) {
+        if (error) return showError(ts, cm, error);
+        var completions = [], after = "";
+        var from = data.start, to = data.end;
+        if (cm.getRange(Pos(from.line, from.ch - 2), from) == "[\"" &&
+            cm.getRange(to, Pos(to.line, to.ch + 2)) != "\"]")
+          after = "\"]";
+
+        // CamelCase regexp
+        var word = cm.getRange(from, to);
+        var reg = new RegExp("^" + word.split(/(?=[A-Z])/).join("[a-z_]*").replace(/\$/g, "\\$&"));
+
+        for (var i = 0; i < data.completions.length; ++i) {
+          var completion = data.completions[i], className = typeToIcon(completion.type, completion.metaData);
+          if (data.guess) className += " " + cls + "guess";
+          if (!reg.test(completion.name)) {
+            continue;
+          }
+          completions.push({
+            text: completion.name + after,
+            displayText: completion.displayName || completion.name,
+            className: className,
+            data: completion
+          });
+        }
+
+        var obj = {from: data.start, to: data.end, list: completions};
+        registerCallbacks(obj);
+      });
+    }
   }
 
-  function typeToIcon(type) {
+  function typeToIcon(type, metaData) {
     var suffix;
-    if (type == "?") suffix = "unknown";
+    if (metaData) {
+        suffix = metaData.group;
+    } else if (type == "?") suffix = "unknown";
     else if (type == "number" || type == "string" || type == "bool") suffix = type;
     else if (/^fn\(/.test(type)) suffix = "fn";
     else if (/^\[/.test(type)) suffix = "array";
@@ -253,11 +301,12 @@
 
   function showContextInfo(ts, cm, pos, queryName, c) {
     ts.request(cm, queryName, function(error, data) {
+      var tip;
       if (error) return showError(ts, cm, error);
-      if (ts.options.typeTip) {
-        var tip = ts.options.typeTip(data);
-      } else {
-        var tip = elt("span", null, elt("strong", null, data.type || "not found"));
+
+      // MOD: when typeTip returns nothing, create default tip
+      if (!(ts.options.typeTip && (tip = ts.options.typeTip(data)))) {
+        tip = elt("span", null, elt("strong", null, data.type || "not found"));
         if (data.doc)
           tip.appendChild(document.createTextNode(" — " + data.doc));
         if (data.url) {
@@ -316,23 +365,32 @@
     });
   }
 
-  function showArgHints(ts, cm, pos) {
-    closeArgHints(ts);
-
-    var cache = ts.cachedArgHints, tp = cache.type;
-    var tip = elt("span", cache.guess ? cls + "fhint-guess" : null,
-                  elt("span", cls + "fname", cache.name), "(");
-    for (var i = 0; i < tp.args.length; ++i) {
+  function styleFunctionTypeString(data, type, pos) {
+    type || (type = parseFnType(data.type));
+    pos = pos === void 0 ? -1 : pos;
+    var tip = elt("span", data.guess ? cls + "fhint-guess" : null,
+        elt("span", cls + "fname", data.name), "(");
+    for (var i = 0; i < type.args.length; ++i) {
       if (i) tip.appendChild(document.createTextNode(", "));
-      var arg = tp.args[i];
+      var arg = type.args[i];
       tip.appendChild(elt("span", cls + "farg" + (i == pos ? " " + cls + "farg-current" : ""), arg.name || "?"));
       if (arg.type != "?") {
         tip.appendChild(document.createTextNode(":\u00a0"));
         tip.appendChild(elt("span", cls + "type", arg.type));
       }
     }
-    tip.appendChild(document.createTextNode(tp.rettype ? ") ->\u00a0" : ")"));
-    if (tp.rettype) tip.appendChild(elt("span", cls + "type", tp.rettype));
+    tip.appendChild(document.createTextNode(type.rettype ? ") ->\u00a0" : ")"));
+    if (type.rettype) {
+      tip.appendChild(elt("span", cls + "type", type.rettype));
+    }
+    return tip;
+  }
+
+  function showArgHints(ts, cm, pos) {
+    closeArgHints(ts);
+
+    var cache = ts.cachedArgHints;
+    var tip = styleFunctionTypeString(cache, cache.type, pos);
     var place = cm.cursorCoords(null, "page");
     var tooltip = ts.activeArgHints = makeTooltip(place.right + 1, place.bottom, tip)
     setTimeout(function() {
@@ -346,18 +404,20 @@
 
     function skipMatching(upto) {
       var depth = 0, start = pos;
+      var prev;
       for (;;) {
         var next = text.charAt(pos);
         if (upto.test(next) && !depth) return text.slice(start, pos);
-        if (/[{\[\(]/.test(next)) ++depth;
-        else if (/[}\]\)]/.test(next)) --depth;
+        if (/[{\[\(<]/.test(next)) ++depth;
+        else if (/[}\]\)>]/.test(next) && prev !== "-") --depth;
+        prev = next;
         ++pos;
       }
     }
 
     // Parse arguments
     if (text.charAt(pos) != ")") for (;;) {
-      var name = text.slice(pos).match(/^([^, \(\[\{]+): /);
+      var name = text.slice(pos).match(/^([^, \(\[\{<]+): /);
       if (name) {
         pos += name[0].length;
         name = name[1];
@@ -608,9 +668,21 @@
     }
     function clear() {
       cm.state.ternTooltip = null;
-      if (tip.parentNode) fadeOut(tip)
+      if (!tip.parentNode) return;
+      cm.off("keydown", clearOnEsc);
+      fadeOut(tip);
       clearActivity()
     }
+
+    // MOD: changed events
+    function clearOnEsc (_, e) {
+      if (e.keyCode === 27) {
+        e.codemirrorIgnore = true;
+        clear();
+      }
+    }
+    cm.on("keydown", clearOnEsc);
+
     var mouseOnTip = false, old = false;
     CodeMirror.on(tip, "mousemove", function() { mouseOnTip = true; });
     CodeMirror.on(tip, "mouseout", function(e) {
@@ -622,18 +694,20 @@
     });
     setTimeout(maybeClear, ts.options.hintDelay ? ts.options.hintDelay : 1700);
     var clearActivity = onEditorActivity(cm, clear)
-  }
+}
 
   function onEditorActivity(cm, f) {
     cm.on("cursorActivity", f)
     cm.on("blur", f)
     cm.on("scroll", f)
     cm.on("setDoc", f)
+    cm.on("mousedown", f);
     return function() {
       cm.off("cursorActivity", f)
       cm.off("blur", f)
       cm.off("scroll", f)
       cm.off("setDoc", f)
+      cm.off("mousedown", f);
     }
   }
 
