@@ -369,7 +369,7 @@
     type || (type = parseFnType(data.type));
     pos = pos === void 0 ? -1 : pos;
     var tip = elt("span", data.guess ? cls + "fhint-guess" : null,
-        elt("span", cls + "fname", data.name), "(");
+        elt("span", cls + "fname", data.name || data.exprName), "(");
     for (var i = 0; i < type.args.length; ++i) {
       if (i) tip.appendChild(document.createTextNode(", "));
       var arg = type.args[i];
@@ -643,6 +643,7 @@
     if (cls) e.className = cls;
     for (var i = 2; i < arguments.length; ++i) {
       var elt = arguments[i];
+      if (elt === undefined) continue;
       if (typeof elt == "string") elt = document.createTextNode(elt);
       e.appendChild(elt);
     }
