@@ -541,6 +541,17 @@
         }
       }
       cm.setSelections(ranges, cur);
+
+      function clear(_, event) {
+        if (event.keyCode === 13 /*enter*/) {
+          // clear selection
+          cm.setCursor(cm.getCursor());
+          cm.off("keydown", clear);
+          event.preventDefault();
+        }
+      }
+
+      cm.on("keydown", clear);
     });
   }
 
