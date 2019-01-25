@@ -352,7 +352,7 @@
     if (cache && cache.doc == cm.getDoc() && cmpPos(start, cache.start) == 0)
       return showArgHints(ts, cm, argPos);
 
-    ts.request(cm, {type: "type", preferFunction: true, end: start}, function(error, data) {
+    ts.request(cm, {type: "type", preferFunction: true, end: start, intent: "arghint"}, function(error, data) {
       if (error || !data.type || !(/^fn\(/).test(data.type)) return;
       ts.cachedArgHints = {
         start: start,
